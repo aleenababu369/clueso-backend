@@ -122,13 +122,15 @@ npm run start:worker
 
 ### Recordings
 
-| Method   | Endpoint                       | Description           |
-| -------- | ------------------------------ | --------------------- |
-| `POST`   | `/api/recordings`              | Upload a recording    |
-| `GET`    | `/api/recordings`              | List all recordings   |
-| `GET`    | `/api/recordings/:id`          | Get recording details |
-| `GET`    | `/api/recordings/:id/download` | Download final video  |
-| `DELETE` | `/api/recordings/:id`          | Delete a recording    |
+| Method   | Endpoint                         | Description                      |
+| -------- | -------------------------------- | -------------------------------- |
+| `POST`   | `/api/recordings`                | Upload a recording               |
+| `GET`    | `/api/recordings`                | List all recordings              |
+| `GET`    | `/api/recordings/:id`            | Get recording details            |
+| `GET`    | `/api/recordings/:id/download`   | Download final video             |
+| `GET`    | `/api/recordings/:id/stream-raw` | Stream raw video (draft preview) |
+| `POST`   | `/api/recordings/:id/process`    | Process draft with translation   |
+| `DELETE` | `/api/recordings/:id`            | Delete a recording               |
 
 ### Upload Recording
 
@@ -154,13 +156,27 @@ curl -X POST http://localhost:3000/api/recordings \
 
 The worker processes recordings through these steps:
 
+### Draft Workflow (Two-Stage Pipeline)
+
 ```
+STAGE 1 (Draft):
 1. EXTRACT_AUDIO   → FFmpeg extracts audio.wav from video
 2. TRANSCRIBE      → Deepgram converts speech to text
-3. AI_PROCESS      → Python service cleans transcript + generates voiceover
-4. APPLY_ZOOM      → FFmpeg applies zoom effects (currently skipped on Windows)
+   → STOPS at DRAFT_READY status (user can preview & select language)
+
+STAGE 2 (Final - triggered by POST /process):
+3. AI_PROCESS      → Python service cleans/translates + generates voiceover
+4. APPLY_ZOOM      → FFmpeg applies zoom effects on click locations
 5. MERGE           → FFmpeg combines video with AI voiceover
 6. COMPLETED       → Recording is ready for download
+```
+
+### Process Draft with Translation
+
+```bash
+curl -X POST http://localhost:3000/api/recordings/{id}/process \
+  -H "Content-Type: application/json" \
+  -d '{"language": "es"}'  # Spanish voiceover
 ```
 
 ### Job Types
@@ -238,8 +254,9 @@ interface IRecording {
   _id: string; // UUID from client
   title: string;
   description?: string;
-  status: "uploaded" | "processing" | "completed" | "failed";
+  status: "uploaded" | "processing" | "draft_ready" | "completed" | "failed";
   currentStep: ProcessingStep;
+  targetLanguage?: string; // For translation
 
   // File paths
   filePath: string; // uploads/{id}/raw.webm
@@ -324,6 +341,34 @@ uploads/
     ├── zoomed.mp4     # With zoom effects
     └── final.mp4      # Final output
 ```
+
+## 🏛️ Architecture Decisions
+
+### Why BullMQ for Job Queue?
+
+- Redis-backed for reliability and persistence
+- Built-in retry and backoff mechanisms
+- Supports job chaining and dependencies
+- Separate worker process for CPU-intensive tasks
+
+### Why Two-Stage Pipeline (Draft Workflow)?
+
+- Allows user to preview recording before AI processing
+- Enables language selection for translation
+- Reduces wasted API calls on unwanted recordings
+- Better user control over final output
+
+### Why Redis Pub/Sub for WebSocket Updates?
+
+- Worker runs in separate process, can't emit Socket.io directly
+- Redis provides reliable message bridge
+- Scales horizontally with multiple workers/servers
+
+### Why FFmpeg for Video Processing?
+
+- Industry standard for video manipulation
+- Supports all required operations (extract, merge, zoom)
+- Cross-platform compatibility
 
 ## 📄 License
 
